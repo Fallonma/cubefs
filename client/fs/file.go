@@ -222,10 +222,11 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 			needBCache = true
 		}
 	}
+
 	if needBCache {
 		f.super.ec.OpenStreamWithCache(ino, needBCache)
 	} else {
-		f.super.ec.OpenStream(ino)
+		f.super.ec.OpenStreamRdonly(ino, req.Flags.IsReadOnly())
 	}
 	log.LogDebugf("TRACE open ino(%v) f.super.bcacheDir(%v) needBCache(%v)", ino, f.super.bcacheDir, needBCache)
 

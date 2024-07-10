@@ -60,6 +60,8 @@ type Streamer struct {
 	writeLock            sync.Mutex
 	inflightEvictL1cache sync.Map
 	pendingCache         chan bcacheKey
+
+	rdonly bool // stream is open only for read， default false
 }
 
 type bcacheKey struct {

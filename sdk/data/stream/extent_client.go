@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cubefs/cubefs/depends/bazil.org/fuse"
 	"github.com/cubefs/cubefs/proto"
 	"github.com/cubefs/cubefs/sdk/data/manager"
 	"github.com/cubefs/cubefs/sdk/data/wrapper"
@@ -349,6 +350,29 @@ func (client *ExtentClient) OpenStream(inode uint64) error {
 	return s.IssueOpenRequest()
 }
 
+func (client *ExtentClient) OpenStreamRdonly(inode uint64, rdonly bool) error {
+	client.streamerLock.Lock()
+	s, ok := client.streamers[inode]
+	if !ok {
+		s = NewStreamer(client, inode)
+		client.streamers[inode] = s
+		s.rdonly = rdonly
+	}
+
+	if s.rdonly {
+		defer client.streamerLock.Unlock()
+		// stream is rdonly, but open again by writable, return err
+		if !rdonly {
+			log.LogErrorf("OpenStreamRdonly: rdonly stream can't be open again for write, s %s, rdonly %v", s.String(), rdonly)
+			return fuse.EPERM
+		}
+
+		return nil
+	}
+
+	return s.IssueOpenRequest()
+}
+
 // Open request shall grab the lock until request is sent to the request channel
 func (client *ExtentClient) OpenStreamWithCache(inode uint64, needBCache bool) error {
 	client.streamerLock.Lock()
@@ -381,6 +405,11 @@ func (client *ExtentClient) CloseStream(inode uint64) error {
 		return nil
 	}
 
+	if s.rdonly {
+		client.streamerLock.Unlock()
+		return nil
+	}
+
 	log.LogDebugf("CloseStream: streamer(%v)", s)
 	return s.IssueReleaseRequest()
 }
@@ -393,8 +422,10 @@ func (client *ExtentClient) EvictStream(inode uint64) error {
 		client.streamerLock.Unlock()
 		return nil
 	}
-	log.LogDebugf("EvictStream streamer(%v)", s)
-	if s.isOpen {
+	if log.EnableDebug() {
+		log.LogDebugf("EvictStream streamer(%v)", s)
+	}
+	if s.isOpen && !s.rdonly {
 		err := s.IssueEvictRequest()
 		if err != nil {
 			return err
@@ -550,12 +581,14 @@ func (client *ExtentClient) Read(inode uint64, data []byte, offset int, size int
 		s.GetExtents()
 	})
 
-	beg = time.Now()
-	err = s.IssueFlushRequest()
-	if err != nil {
-		return
+	if !s.rdonly {
+		beg = time.Now()
+		err = s.IssueFlushRequest()
+		if err != nil {
+			return
+		}
+		clientMetric.WithLabelValues("Read_Flush").Observe(float64(time.Since(beg).Microseconds()))
 	}
-	clientMetric.WithLabelValues("Read_Flush").Observe(float64(time.Since(beg).Microseconds()))
 
 	beg = time.Now()
 	read, err = s.read(data, offset, size)
